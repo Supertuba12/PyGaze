@@ -70,7 +70,7 @@ from tobiiglasses.tobiiglassescontroller import TobiiGlassesController
 # # # # #
 # functions
 
-def calculate_angular_velocity(gaze_samples, eye_samples):
+def calculate_angular_velocity(gp3_samples, eye_samples):
 	""" Returns the angular velocity of eye movement
 
 	The calculation is based on Tobii's I-VT filter. The law of cosines is used
@@ -78,16 +78,16 @@ def calculate_angular_velocity(gaze_samples, eye_samples):
 	angle between samples divided by the time difference.
 
 	arguments
-	gaze_samples		-- Gaze 3d position samples from tobii glasses
+	gp3_samples		-- Gaze 3d position samples from tobii glasses
 	eye_samples			-- Eye position samples from tobii glasses 
 
 	returns
 	angular_velocity	-- Angular velocity as a float number
 	"""
 
-	a = np.array(gaze_samples[0]['gp3']) - np.array(eye_samples[0]['pc']) 
-	b = np.array(gaze_samples[-1]['gp3']) - np.array(eye_samples[-1]['pc'])
-	c = np.array(gaze_samples[-1]['gp3']) - np.array(gaze_samples[0]['gp3'])
+	a = np.array(gp3_samples[0]['gp3']) - np.array(eye_samples[0]['pc']) 
+	b = np.array(gp3_samples[-1]['gp3']) - np.array(eye_samples[-1]['pc'])
+	c = np.array(gp3_samples[-1]['gp3']) - np.array(gp3_samples[0]['gp3'])
 
 	# convert to norm/magnitude of vectors
 	a = np.linalg.norm(a)
@@ -97,7 +97,7 @@ def calculate_angular_velocity(gaze_samples, eye_samples):
 	# angle in degrees
 	angle = np.degrees(np.arccos((a**2 + b**2 - c**2) / (2*a*b)))
 
-	time_diff = gaze_samples[-1]['ts'] - gaze_samples[0]['ts']
+	time_diff = gp3_samples[-1]['ts'] - gp3_samples[0]['ts']
 
 	return math.abs(angle / time_diff)
 
@@ -121,9 +121,11 @@ class TobiiGlassesTracker(BaseEyeTracker):
 		display	--	a pygaze.display.Display instance
 
 		keyword arguments
-		address	-- internal ipv4/ipv6 address for Tobii Pro Glasses 2 (default =
-				   '192.168.71.50', for IpV6 address use square brackets [fe80::xxxx:xxxx:xxxx:xxxx])
-		udpport	-- UDP port number for Tobii Pro Glasses data streaming (default = 49152)
+		address	-- internal ipv4/ipv6 address for Tobii Pro Glasses 2 (default=
+				   '192.168.71.50', for IpV6 address use square brackets 
+				   [fe80::xxxx:xxxx:xxxx:xxxx])
+		udpport	-- UDP port number for Tobii Pro Glasses data streaming 
+				   (default = 49152)
 		"""
 
 		# try to copy docstrings (but ignore it if it fails, as we do
@@ -140,10 +142,12 @@ class TobiiGlassesTracker(BaseEyeTracker):
 		# object properties
 		self.disp = display
 		self.screen = Screen()
-		self.dispsize = settings.DISPSIZE # display size in pixels
-		self.screensize = settings.SCREENSIZE # display size in cm
-		self.screendist = settings.SCREENDIST # distance between participant and screen in cm
-		self.pixpercm = (self.dispsize[0]/float(self.screensize[0]) + self.dispsize[1]/float(self.screensize[1])) / 2.0
+		self.dispsize = settings.DISPSIZE		# display size in pixels
+		self.screensize = settings.SCREENSIZE	# display size in cm
+		self.screendist = settings.SCREENDIST	# distance between participant
+												# and screen in cm
+		self.pixpercm = (self.dispsize[0]/float(self.screensize[0]) + \ 
+						self.dispsize[1]/float(self.screensize[1])) / 2.0
 		self.kb = Keyboard(keylist=['space', 'escape', 'q'], timeout=1)
 		self.errorbeep = Sound(osc='saw',freq=100, length=100)
 
@@ -159,21 +163,40 @@ class TobiiGlassesTracker(BaseEyeTracker):
 		self.binocular = 2
 
 
-		self.maxtries = 100 # number of samples obtained before giving up (for obtaining accuracy and tracker distance information, as well as starting or stopping recording)
+		self.maxtries = 100 # number of samples obtained before giving up (for
+							# obtaining accuracy and tracker distance 
+							# information, as well as starting or stopping 
+							# recording)
 		self.prevsample = (-1,-1)
 
 		# validation properties
 		self.nvalsamples = 1000 # samples for one validation point
 
 		# event detection properties
-		self.fixtresh = 1.5 # degrees; maximal distance from fixation start (if gaze wanders beyond this, fixation has stopped)
-		self.fixtimetresh = 100 # milliseconds; amount of time gaze has to linger within self.fixtresh to be marked as a fixation
-		self.spdtresh = saccade_velocity_threshold # degrees per second; saccade velocity threshold
-		self.accthresh = saccade_acceleration_threshold # degrees per second**2; saccade acceleration threshold
-		self.blinkthresh = blink_threshold # milliseconds; blink detection threshold used in PyGaze method
+		self.fixtresh = 1.5 # degrees; maximal distance from fixation start
+							# (if gaze wanders beyond this, fixation has 
+							# stopped)
+
+		self.fixtimetresh = 100	# milliseconds; amount of time gaze has to 
+								# linger within self.fixtresh to be marked 
+								# as a fixation
+
+		self.spdtresh = saccade_velocity_threshold  # degrees per second; 
+													# saccade velocity 
+													# threshold
+
+		self.accthresh = saccade_acceleration_threshold # degrees per second**2
+														# saccade acceleration 
+														# threshold
+
+		self.blinkthresh = blink_threshold	# milliseconds; blink detection 
+											# threshold used in PyGaze method
 		self.eventdetection = eventdetection
 		self.set_detection_type(self.eventdetection)
-		self.weightdist = 10 # weighted distance, used for determining whether a movement is due to measurement error (1 is ok, higher is more conservative and will result in only larger saccades to be detected)
+		self.weightdist = 10 # weighted distance, used for determining whether 
+							 # a movement is due to measurement error (1 is ok,
+							 # higher is more conservative and will result in 
+							 # only larger saccades to be detected)
 
 
 		self.tobiiglasses = TobiiGlassesController(udpport, address)
@@ -186,11 +209,25 @@ class TobiiGlassesTracker(BaseEyeTracker):
 		self.current_project_id = None
 
 		# Fixation filer parameters
-		self.init_run = True			# Used for initial fixation run to collect samples to fill window.
-		self.num_fixation_samples = 3	# Default = 3. Can be increased to create a bigger window.
-		self.gaze_samples = []			# 3d gaze position samples
+		self.init_run = True			# Used for initial fixation run to 
+										# collect samples to fill window
+
+		self.num_fixation_samples = 3	# Default = 3. Can be increased to 
+										# create a bigger window
+
+		self.gaze_samples = []			# gaze position samples
+		self.gp3_samples = []			# 3d gaze position samples
 		self.eye_samples = []			# 3d eye position samples
 
+		self.velocity_threshold = 70	# Degrees/second. 70 retains good 
+										# accuracy for saccades and fixations
+
+		self.latest_fixation = {}		# Latest recorded fixation.
+
+		self.adjacent_threshold = 0.5	# Degrees. If angular difference of 
+										# adjacent fixations are below
+										# threshold, they are classified as the
+										# belonging to the same fixation.
 
 	def __del__(self):
 
@@ -732,18 +769,24 @@ class TobiiGlassesTracker(BaseEyeTracker):
 		None
 
 		returns
-		sample	-- an (x,y) tuple or a (-1,-1) on an error
+		sample	-- a dictionary with the gaze position accompanied with the
+				   timestamp and the event id gidx
 
 		"""
 
 		if self.tobiiglasses.is_streaming():
-			data = self.get_gp()
+			data = self.tobiiglasses.get_gp()
 			try:
-				gp = data['gp']
-				return gp
+				data_dict = {'gp': data['gp'], 
+							'ts': data['ts'],
+							'gidx': data['gidx']}
 			except IndexError:
 				log.error("No gaze position data available.")
-				return (-1,-1)
+				data_dict = {'gp': [-1,-1], 
+							'ts': -1,
+							'gidx': -1}
+			finally:
+				return data_dict
 		else:
 			log.error("The eye-tracker is not in capturing mode.")
 
@@ -972,12 +1015,21 @@ class TobiiGlassesTracker(BaseEyeTracker):
 
 	def wait_for_fixation_start(self, experimental=False):
 
-		"""Returns starting time and position when a fixation is started;
-		function assumes a 'fixation' has started when gaze position
+		"""Returns starting time and position when a fixation is started.
+
+
+		Function assumes a 'fixation' has started when gaze position
 		remains reasonably stable (i.e. when most deviant samples are
 		within self.pxfixtresh) for five samples in a row (self.pxfixtresh
 		is created in self.calibration, based on self.fixtresh, a property
 		defined in self.__init__)
+
+		If running the experimental version, the function will calculate the
+		angular velocity between the first and last samples in a 'window' of
+		length num_fixation_samples. The middle value in the sample window is
+		the sample that we record as a fixation point. Should the velocity be
+		less than velocity_threshold, the middle point will be classified as
+		part of a fixation.
 		
 		arguments
 		experimental	-- Boolean specifying if experimental variant of
@@ -985,10 +1037,9 @@ class TobiiGlassesTracker(BaseEyeTracker):
 						   Pygaze version.
 		
 		returns
-		time, gazepos	-- time is the starting time in milliseconds (from
-					   expstart), gazepos is a (x,y) gaze position
-					   tuple of the position from which the fixation
-					   was initiated
+		data_dict		-- A dictionary with the starting gaze position of the
+						   fixation and the timestamp. Experimental variant adds
+						   the gaze 3d position to the dictionary.
 		"""
 		
 		# # # # #
@@ -1027,8 +1078,9 @@ class TobiiGlassesTracker(BaseEyeTracker):
 				# check if sample is valid
 				if self.is_valid_sample(npos, 'gp'):
 					# check if new sample is too far from starting position
-					if (npos[0]-spos[0])**2 + (npos[1]-spos[1])**2 > \
-												self.pxfixtresh**2:
+					if (npos['gp'][0]-spos['gp'][0])**2 + \
+						(npos['gp'][1]-spos['gp'][1])**2 > \
+						self.pxfixtresh**2:
 						# if not, reset starting position and time
 						spos = copy.copy(npos)
 						t0 = clock.get_time()
@@ -1039,46 +1091,85 @@ class TobiiGlassesTracker(BaseEyeTracker):
 						# check if fixation time threshold has been surpassed
 						if t1 - t0 >= self.fixtimetresh:
 							# return time and starting position
-							return t0, spos
+							return {'ts': t0, 'spos': spos}
 		# Run experimental fixation detection
 		else:
-			if self.init_run:
-				# If first time running, get inital samples to fill the window.
-				self.init_run = False
-				spos = self.sample3D()
-				eye_position = self.eye_position()
-				while not self.is_valid_sample(spos, 'gp3') and \
-					not self.is_valid_sample(eye_position, 'pc'):
+			# Loop until fixation found
+			while True:
+				if self.init_run:
+					# Loop until we got a full window of valid samples.
+					while len(self.gaze_samples) < 3 and \
+						len(self.gp3_samples) < 3 and \ 
+						len(self.eye_samples) < 3:
 
-					if len(self.gaze_samples) < self.num_fixation_samples:
-						self.gaze_samples.append(spos)
+						# If first time running, get inital samples to fill the
+						# window.
+						self.init_run = False
+						gaze_pos = self.sample()
+						spos = self.sample3D()
+						eye_position = self.eye_position()
 
-					if len(self.eye_samples) < self.num_fixation_samples:
+						while not self.is_valid_sample(gaze_pos, 'gp') and \
+							not self.is_valid_sample(spos, 'gp3') and\
+							not self.is_valid_sample(eye_position, 'pc'):
+							# Retry fetching valid samples
+							gaze_pos = self.sample()
+							spos = self.sample3D()
+							eye_position = self.eye_position()
+
+					
+						self.gaze_samples.append(gaze_pos)
+						self.gp3_samples.append(spos)
 						self.eye_samples.append(eye_position)
 					
+				else:
+					# remove oldest sample
+					self.gaze_samples = self.gaze_samples[1:]
+					self.gp3_samples = self.gp3_samples[1:]
+					self.eye_samples = self.eye_samples[1:]
+
+					# Fetch new samples
+					gaze_pos = self.sample()
 					spos = self.sample3D()
 					eye_position = self.eye_position()
-			else:
-				# remove oldest sample
-				self.gaze_samples = self.gaze_samples[1:]
-				self.eye_samples = self.eye_samples[1:]
 
-				# Fetch new sample
-				spos = self.sample3D()
-				eye_position = self.eye_position()
-				while not self.is_valid_sample(spos, 'gp3') and \
-					not self.is_valid_sample(eye_position, 'pc'):
-					self.gaze_samples.append(spos)
+					while not self.is_valid_sample(gaze_pos, 'gp') and \
+						not self.is_valid_sample(spos, 'gp3') and \
+						not self.is_valid_sample(eye_position, 'pc'):
+						# Retry fetching valid samples
+						gaze_pos = self.sample()
+						spos = self.sample3D()
+						eye_position = self.eye_position()
+
+
+					self.gaze_samples.append(gaze_pos)
+					self.gp3_samples.append(spos)
 					self.eye_samples.append(eye_position)
 			
-			# make sure that all samples are for the same event
-			if is_same_event(self.gaze_samples + self.eye_samples):
-				# TODO: Use mems data to correct the angle that the eye(s) have
-				# actually moved before calculating the angular velocity.
-				ang_vel = self.calculate_angular_velocity(self.gaze_samples, self.eye_samples)
+				# make sure that all samples are for the same event
+				if is_same_event(self.gaze_samples, 
+								self.gp3_samples, 
+								self.eye_samples):
+					# TODO: Use mems data to correct the angle that the eye(s)
+					# have actually moved before calculating the angular 
+					# velocity
+					ang_vel = self.calculate_angular_velocity(self.gp3_samples, 
+															self.eye_samples)
+					if ang_vel < self.velocity_threshold:
+						# Take the median value of window values. Smooths out the
+						# gaze position
+						gps_x = [sample['gp'][0] for sample in self.gaze_samples]
+						gps_y = [sample['gp'][1] for sample in self.gaze_samples]
+						gp3s_x = [sample['gp3'][0] for sample in self.gp3_samples]
+						gp3s_y = [sample['gp3'][1] for sample in self.gp3_samples]
+						gp_median = [np.median(gps_x), np.median(gps_y)]
+						gp3_median = [np.median(gp3s_x), np.median(gp3s_y)]
+
+						return {'ts': self.gaze_samples[1]['ts'],
+								'gaze_pos': gp_median, 
+								'gp3': gp3_median}
 
 				
-
 
 	def wait_for_fixation_end(self, experimental=False):
 
@@ -1094,10 +1185,9 @@ class TobiiGlassesTracker(BaseEyeTracker):
 						   Pygaze version.
 
 		returns
-		time, gazepos	-- time is the starting time in milliseconds (from
-					   expstart), gazepos is a (x,y) gaze position
-					   tuple of the position from which the fixation
-					   was initiated
+		data_dict		-- a dictionary with the fixation end time accompanied
+						   by the gaze position. With experimental=True, the gp3
+						   data is added to the dictionary as well.
 
 
 		"""
@@ -1123,8 +1213,10 @@ class TobiiGlassesTracker(BaseEyeTracker):
 			# from the initial 'fixation' position has been detected
 		
 			# get starting time and position
-			stime, spos = self.wait_for_fixation_start()
-		
+			data = self.wait_for_fixation_start()
+			stime = data['ts']
+			spos = data['spos']
+
 			# loop until fixation has ended
 			while True:
 				# get new sample
@@ -1132,15 +1224,65 @@ class TobiiGlassesTracker(BaseEyeTracker):
 				# check if sample is valid
 				if self.is_valid_sample(npos, 'gp'):
 					# check if sample deviates to much from starting position
-					if (npos[0]-spos[0])**2 + (npos[1]-spos[1])**2 > self.pxfixtresh**2: # Pythagoras
+					if (npos['gp'][0]-spos['gp'][0])**2 + \
+						(npos['gp'][1]-spos['gp'][1])**2 > \
+						self.pxfixtresh**2: # Pythagoras
 						# break loop if deviation is too high
 						break
 
-			return clock.get_time(), spos
+			return {'fixation_time': clock.get_time(), 
+					'gaze_pos': spos}
 
 		# Run experimental fixation detection
 		else:
-			stime, spos = self.wait_for_fixation_start(experimental=True)
+			data = self.wait_for_fixation_start(experimental=True)
+			stime = data['ts']
+			gaze_pos = data['gaze_pos']
+			gp3_pos = data['gp3']
+			
+			# loop until fixation has ended
+			while True:
+				# remove oldest sample
+				self.gaze_samples = self.gaze_samples[1:]
+				self.gp3_samples = self.gp3_samples[1:]
+				self.eye_samples = self.eye_samples[1:]
+
+				# Fetch new samples
+				gaze_pos = self.sample()
+				spos = self.sample3D()
+				eye_position = self.eye_position()
+
+				while not self.is_valid_sample(gaze_pos, 'gp') and \
+					not self.is_valid_sample(spos, 'gp3') and \
+					not self.is_valid_sample(eye_position, 'pc'):
+					# Retry fetching valid samples
+					gaze_pos = self.sample()
+					spos = self.sample3D()
+					eye_position = self.eye_position()
+
+
+				self.gaze_samples.append(gaze_pos)
+				self.gp3_samples.append(spos)
+				self.eye_samples.append(eye_position)
+			
+				# make sure that all samples are for the same event
+				if is_same_event(self.gaze_samples, 
+								self.gp3_samples, 
+								self.eye_samples):
+					# TODO: Use mems data to correct the angle that the eye(s)
+					# have actually moved before calculating the angular 
+					# velocity
+					ang_vel = self.calculate_angular_velocity(self.gp3_samples, 
+															self.eye_samples)
+					fixation_time = self.gaze_samples[1]['ts'] - stime
+					if ang_vel > self.velocity_threshold and \
+						fixation_time > self.fixtimetresh: 
+
+						return {'fixation_time': fixation_time,
+								'gaze_pos': gaze_pos, 
+								'gp3': gp3_pos}
+
+
 
 	def wait_for_saccade_start(self):
 
@@ -1178,7 +1320,7 @@ class TobiiGlassesTracker(BaseEyeTracker):
 				newpos = self.sample()
 			# get starting time, position, intersampledistance, and velocity
 			t0 = clock.get_time()
-			prevpos = newpos[:]
+			prevpos = newpos
 			s = 0
 			v0 = 0
 
@@ -1188,9 +1330,11 @@ class TobiiGlassesTracker(BaseEyeTracker):
 				# get new sample
 				newpos = self.sample()
 				t1 = clock.get_time()
-				if self.is_valid_sample(newpos, 'gp') and newpos != prevpos:
+				if self.is_valid_sample(newpos, 'gp') and \
+					newpos['gp'] != prevpos['gp']:
 					# check if distance is larger than precision error
-					sx = newpos[0]-prevpos[0]; sy = newpos[1]-prevpos[1]
+					sx = newpos['gp'][0] - prevpos['gp'][0]
+					sy = newpos['gp'][1] - prevpos['gp'][1]
 					# weigthed distance: (sx/tx)**2 + (sy/ty)**2 > 1 means
 					# movement larger than RMS noise
 					if (sx/self.pxdsttresh[0])**2 + (sy/self.pxdsttresh[1])**2 \
@@ -1206,13 +1350,13 @@ class TobiiGlassesTracker(BaseEyeTracker):
 						# threshold values
 						if v1 > self.pxspdtresh or a > self.pxacctresh:
 							saccadic = True
-							spos = prevpos[:]
+							spos = prevpos['gp'][:]
 							stime = clock.get_time()
 						# update previous values
 						t0 = copy.copy(t1)
 						v0 = copy.copy(v1)
 					# udate previous sample
-					prevpos = newpos[:]
+					prevpos = newpos
 			return stime, spos
 
 	def wait_for_saccade_end(self):
@@ -1255,7 +1399,8 @@ class TobiiGlassesTracker(BaseEyeTracker):
 		# get starting time, intersample distance, and velocity
 		t1 = clock.get_time()
 		# = intersample distance = speed in px/sample
-		s = ((prevpos[0]-spos[0])**2 + (prevpos[1]-spos[1])**2)**0.5 
+		s = ((prevpos['gp'][0] - spos['gp'][0])**2 + \
+			(prevpos['gp'][1] - spos['gp'][1])**2)**0.5 
 		v0 = s / (t1-t0)
 
 		# run until velocity and acceleration go below threshold
@@ -1264,11 +1409,12 @@ class TobiiGlassesTracker(BaseEyeTracker):
 			# get new sample
 			newpos = self.sample()
 			t1 = clock.get_time()
-			if self.is_valid_sample(newpos,'gp') and newpos != prevpos:
+			if self.is_valid_sample(newpos,'gp') and \
+				newpos['gp'] != prevpos['gp']:
 				# calculate distance
 				# speed in pixels/sample
-				s = ((newpos[0]-prevpos[0])**2 + \
-					(newpos[1]-prevpos[1])**2)**0.5 
+				s = ((newpos['gp'][0]-prevpos['gp'][0])**2 + \
+					(newpos['gp'][1]-prevpos['gp'][1])**2)**0.5 
 				# calculate velocity
 				v1 = s / (t1-t0)
 				# calculate acceleration
@@ -1277,13 +1423,13 @@ class TobiiGlassesTracker(BaseEyeTracker):
 				# check if velocity and acceleration are below threshold
 				if v1 < self.pxspdtresh and (a > -1*self.pxacctresh and a < 0):
 					saccadic = False
-					epos = newpos[:]
+					epos = newpos['gp'][:]
 					etime = clock.get_time()
 				# update previous values
 				t0 = copy.copy(t1)
 				v0 = copy.copy(v1)
 			# udate previous sample
-			prevpos = newpos[:]
+			prevpos = newpos
 
 		return etime, spos, epos
 
@@ -1306,9 +1452,7 @@ class TobiiGlassesTracker(BaseEyeTracker):
 			if sample['gp3'] == [-1,-1,-1]:
 				return False
 		elif sample_type == 'gp':
-			if sample == (-1,-1):
-				# TODO: change data container of sample to conform with rest of
-				# data.
+			if sample['gp'] == [-1,-1]:
 				return False
 		elif sample_type == 'pc':
 			if sample['pc'] == [-1,-1,-1]:
@@ -1321,7 +1465,7 @@ class TobiiGlassesTracker(BaseEyeTracker):
 		return True
 
 
-	def is_same_event(self, gaze_samples, eye_samples):
+	def is_same_event(self, gaze_samples, gp3_samples, eye_samples):
 
 		"""Checks that samples from livedata is from the same gaze event.
 
@@ -1331,7 +1475,9 @@ class TobiiGlassesTracker(BaseEyeTracker):
 		the equal at the same position in the sample list.
 
 		arguments
-		samples		-- List of samples to check.
+		gaze_samples	-- gaze position samples
+		gp3_samples		-- gaze 3d position samples
+		eye_samples		-- eye samples
 
 		returns
 		valid		-- Boolean which is True if all samples share the same gidx
@@ -1339,7 +1485,8 @@ class TobiiGlassesTracker(BaseEyeTracker):
 		
 		"""
 		
-		valid = all(gaze['gidx'] == eye['gidx'] for gaze, eye in zip(gaze_samples, eye_samples))
+		valid = all(gaze['gidx'] == gp3['gidx'] == eye['gidx'] for \
+				gaze, gp3, eye in zip(gaze_samples, gp3_samples, eye_samples))
 		return valid
 
 	def get_data(self):
