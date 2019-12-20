@@ -23,7 +23,7 @@
 # TobiiGlassesTracker
 import copy
 import math
-import numpy
+import numpy as np
 
 
 from pygaze import settings
@@ -59,13 +59,48 @@ import uuid
 import logging as log
 
 import warnings
-warnings.filterwarnings("ignore", category=numpy.VisibleDeprecationWarning)
+warnings.filterwarnings("ignore", category=np.VisibleDeprecationWarning)
 
 
 # # # # #
 # TobiiGlassesController
 
 from tobiiglasses.tobiiglassescontroller import TobiiGlassesController
+
+# # # # #
+# functions
+
+def calculate_angular_velocity(gaze_samples, eye_samples):
+	""" Returns the angular velocity of eye movement
+
+	The calculation is based on Tobii's I-VT filter. The law of cosines is used
+	to get the angle between two gaze positions and the angular velocity is the
+	angle between samples divided by the time difference.
+
+	arguments
+	gaze_samples		-- Gaze 3d position samples from tobii glasses
+	eye_samples			-- Eye position samples from tobii glasses 
+
+	returns
+	angular_velocity	-- Angular velocity as a float number
+	"""
+
+	a = np.array(gaze_samples[0]['gp3']) - np.array(eye_samples[0]['pc']) 
+	b = np.array(gaze_samples[-1]['gp3']) - np.array(eye_samples[-1]['pc'])
+	c = np.array(gaze_samples[-1]['gp3']) - np.array(gaze_samples[0]['gp3'])
+
+	# convert to norm/magnitude of vectors
+	a = np.linalg.norm(a)
+	b = np.linalg.norm(b)
+	c = np.linalg.norm(c)
+
+	# angle in degrees
+	angle = np.degrees(np.arccos((a**2 + b**2 - c**2) / (2*a*b)))
+
+	time_diff = gaze_samples[-1]['ts'] - gaze_samples[0]['ts']
+
+	return math.abs(angle / time_diff)
+
 
 
 
@@ -149,6 +184,12 @@ class TobiiGlassesTracker(BaseEyeTracker):
 		self.current_recording_id = None
 		self.current_participant_id = None
 		self.current_project_id = None
+
+		# Fixation filer parameters
+		self.init_run = True			# Used for initial fixation run to collect samples to fill window.
+		self.num_fixation_samples = 3	# Default = 3. Can be increased to create a bigger window.
+		self.gaze_samples = []			# 3d gaze position samples
+		self.eye_samples = []			# 3d eye position samples
 
 
 	def __del__(self):
@@ -281,7 +322,6 @@ class TobiiGlassesTracker(BaseEyeTracker):
 		return header
 
 
-
 	def __data_logger__(self, logfile, frequency, keys, triggers, time_offset):
 
 		with open(logfile, 'a') as f:
@@ -307,6 +347,7 @@ class TobiiGlassesTracker(BaseEyeTracker):
 
 		return self.tobiiglasses.is_streaming()
 
+
 	def stop_capturing(self):
 
 		if self.tobiiglasses.is_streaming():
@@ -315,6 +356,7 @@ class TobiiGlassesTracker(BaseEyeTracker):
 			log.error("The eye-tracker is not in capturing mode.")
 
 		return not self.tobiiglasses.is_streaming()
+
 
 	def calibrate(self, calibrate=True, validate=True):
 
@@ -350,12 +392,14 @@ class TobiiGlassesTracker(BaseEyeTracker):
 
 		return res
 
+
 	def set_current_project(self, project_name = None):
 
 		if project_name is None:
 			self.current_project_id = self.tobiiglasses.create_project()
 		else:
 			self.current_project_id = self.tobiiglasses.create_project(project_name)
+
 
 	def set_current_participant(self, participant_name = None):
 
@@ -366,6 +410,7 @@ class TobiiGlassesTracker(BaseEyeTracker):
 				self.current_participant_id = self.tobiiglasses.create_participant(self.current_project_id)
 			else:
 				self.current_participant_id = self.tobiiglasses.create_participant(self.current_project_id, participant_name)
+
 
 	def __create_calibration__(self, project_id, participant_id):
 
@@ -384,6 +429,7 @@ class TobiiGlassesTracker(BaseEyeTracker):
 			log.error("The eye-tracker is already in logging mode.")
 
 		return self.logging
+
 
 	def trigger(self, trigger_key, trigger_value):
 
@@ -422,7 +468,6 @@ class TobiiGlassesTracker(BaseEyeTracker):
 
 		if self.tobiiglasses.is_streaming():
 			self.stop_capturing()
-
 
 
 	def connected(self):
@@ -468,7 +513,6 @@ class TobiiGlassesTracker(BaseEyeTracker):
 		"""Not supported for TobiiProGlassesTracker (yet)"""
 
 		print("function not supported yet")
-
 
 
 	def fix_triggered_drift_correction(self, pos=None, min_samples=10, max_dev=60, reset_threshold=30):
@@ -544,9 +588,6 @@ class TobiiGlassesTracker(BaseEyeTracker):
 		print("function not supported yet")
 
 
-
-
-
 	def log_var(self, var, val):
 
 		"""Writes a variable to the log file
@@ -579,23 +620,108 @@ class TobiiGlassesTracker(BaseEyeTracker):
 
 		print("function not supported yet")
 
+	
+	def eye_position(self):
 
-	def pupil_size(self):
-
-		"""Returns newest available pupil size
+		"""Returns the 3D positional data for the eye(s)
+		
+		Whether data for both eyes or just one should be returned is
+		determined by the chosen method to do fixation filtering. With
+		method 'binocular', an average of the data is returned. With 
+		method 'left' or 'right' the data for the left or right eye
+		is returned respectively.
 
 		arguments
 		None
 
 		returns
-		pupilsize	--	a float or -1 on an error
+		eye_position	-- A dictionary with the 3D positon of the eye(s)
+						and the accompanied timestamp and event id gidx
+
+		"""
+		if self.tobiiglasses.is_streaming():
+			if self.eye_used == 0:
+				data = self.get_lefteyedata
+				try:
+					return data['pc']
+				except IndexError:
+					log.error("No eye position data available")
+					data_dict = {'pc': [-1,-1,-1], 'ts': -1, 'gidx': -1}
+					return data_dict
+
+			elif self.eye_used == 1:
+				data = self.get_righteyedata
+				try:
+					return data['pc']
+				except IndexError:
+					log.error("No eye position data available")
+					data_dict = {'pc': [-1,-1,-1], 'ts': -1, 'gidx': -1}
+					return data_dict
+
+			elif self.eye_used == 2:
+				data_left = self.get_lefteyedata
+				data_right = self.get_righteyedata
+				try:
+					if data_left['pc']['gidx'] != data_right['pc']['gidx']:
+						# we got eye positions for different events
+						data_dict = {'pc': [-1,-1,-1], 'ts': -1, 'gidx': -1}
+						return data_dict
+
+					# data okay, continue
+					eye_position = np.average([data_left['pc']['pc'], \
+											data_right['pc']['pc']], axis=0)
+					ts_avg = (data_left['pc']['ts'] + data_right['pc']['ts'])/2
+					data_dict = {'pc': list(eye_position), 
+								'ts': ts_avg,
+								'gidx': data_left['pc']['gidx']}
+					return data_dict
+				except IndexError:
+					log.error("No eye position data available")
+					data_dict = {'pc': [-1,-1,-1], 
+								'ts': -1, 
+								'gidx': -1}
+					return data_dict
+
+		else:
+			log.error("The eye-tracker is not in capturing mode.")
+
+
+	def pupil_size(self):
+
+		"""Returns newest available pupil diameter for left and right eye
+
+		arguments
+		None
+
+		returns
+		pupilsize	--	a dictionary with left and right eye pupil diameter
+						accompanied with the timestamp and event id gidx
 
 
 		"""
 
-		"""Not supported for TobiiProGlassesTracker (yet)"""
+		if self.tobiiglasses.is_streaming():
+			ldata = self.get_lefteyedata()
+			rdata = self.get_righteyedata()
+			try:
+				if ldata['pd']['gidx'] == rdata['pd']['gidx']:
+					ts_avg = (ldata['pd']['ts'] + rdata['pd']['ts']) / 2
 
-		print("function not supported yet")
+					data_dict = {'left': ldata['pd']['pd'], 
+								'right': rdata['pd']['pd'],
+								'ts': ts_avg,
+								'gidx': ldata['pd']['gidx']}
+			except IndexError:
+				log.error("No gaze 3d position data available.")
+
+				data_dict = {'left': -1, 
+							'right': -1,
+							'ts': -1,
+							'gidx': -1}
+			finally:
+				return data_dict
+		else:
+			log.error("The eye-tracker is not in capturing mode.")
 
 
 	def sample(self):
@@ -610,9 +736,47 @@ class TobiiGlassesTracker(BaseEyeTracker):
 
 		"""
 
-		"""Not supported for TobiiProGlassesTracker (yet)"""
+		if self.tobiiglasses.is_streaming():
+			data = self.get_gp()
+			try:
+				gp = data['gp']
+				return gp
+			except IndexError:
+				log.error("No gaze position data available.")
+				return (-1,-1)
+		else:
+			log.error("The eye-tracker is not in capturing mode.")
 
-		print("function not supported yet")
+
+	def sample3D(self):
+
+		"""Returns newest available gaze 3D position 
+
+		arguments
+		None
+
+		returns
+		sample	-- a dictionary with gp3 data accompanied with the
+				timestamp and event id gidx
+
+		"""
+
+		if self.tobiiglasses.is_streaming():
+			data = self.tobiiglasses.get_gp3()
+			try:
+				data_dict = {'gp3': data['gp3'], 
+							'ts': data['ts'],
+							'gidx': data['gidx']}
+			except IndexError:
+				log.error("No gaze 3d position data available.")
+				data_dict = {'gp3': [-1,-1,-1], 
+							'ts': -1,
+							'gidx': -1}
+			finally:
+				return data_dict
+		else:
+			log.error("The eye-tracker is not in capturing mode.")
+		
 
 
 	def send_command(self, cmd):
@@ -723,10 +887,17 @@ class TobiiGlassesTracker(BaseEyeTracker):
 
 
 		"""
-
-		"""Not supported for TobiiProGlassesTracker (yet)"""
-
-		print("function not supported yet")
+		
+		# warn if detection is set to native
+		if eventdetection == 'native':
+			print("WARNING! 'native' event detection has been selected, \
+				but Tobii does not provide detection algorithms; PyGaze \
+				algorithm will be used instead")
+		
+		# set event detection methods to PyGaze
+		self.eventdetection = 'pygaze'
+		
+		return (self.eventdetection,self.eventdetection,self.eventdetection)
 
 
 	def wait_for_event(self, event):
@@ -748,9 +919,22 @@ class TobiiGlassesTracker(BaseEyeTracker):
 				   method are returned
 		"""
 
-		"""Not supported for TobiiProGlassesTracker (yet)"""
+		if event == 3:
+			outcome = self.wait_for_blink_start()
+		elif event == 4:
+			outcome = self.wait_for_blink_end()
+		elif event == 5:
+			outcome = self.wait_for_saccade_start()
+		elif event == 6:
+			outcome = self.wait_for_saccade_end()
+		elif event == 7:
+			outcome = self.wait_for_fixation_start()
+		elif event == 8:
+			outcome = self.wait_for_fixation_end()
+		else:
+			raise Exception("Error in libtobii.TobiiTracker.wait_for_event: eventcode %s is not supported" % event)
 
-		print("function not supported yet")
+		return outcome
 
 
 	def wait_for_blink_end(self):
@@ -786,8 +970,117 @@ class TobiiGlassesTracker(BaseEyeTracker):
 
 		print("function not supported yet")
 
+	def wait_for_fixation_start(self, experimental=False):
 
-	def wait_for_fixation_end(self):
+		"""Returns starting time and position when a fixation is started;
+		function assumes a 'fixation' has started when gaze position
+		remains reasonably stable (i.e. when most deviant samples are
+		within self.pxfixtresh) for five samples in a row (self.pxfixtresh
+		is created in self.calibration, based on self.fixtresh, a property
+		defined in self.__init__)
+		
+		arguments
+		experimental	-- Boolean specifying if experimental variant of
+						   fixation detection should be used in place of
+						   Pygaze version.
+		
+		returns
+		time, gazepos	-- time is the starting time in milliseconds (from
+					   expstart), gazepos is a (x,y) gaze position
+					   tuple of the position from which the fixation
+					   was initiated
+		"""
+		
+		# # # # #
+		# Tobii method
+
+		if self.eventdetection == 'native':
+			
+			# print warning, since Tobii does not have a fixation start
+			# detection built into their API (only ending)
+			
+			print("WARNING! 'native' event detection has been selected, \
+				but Tobii does not offer fixation detection; other \
+				algorithm will be used")
+			
+		# Run pygaze fixation detection (taken from tobiilegacy)
+		if not experimental:	
+			# # # # #
+			# PyGaze method
+		
+			# function assumes a 'fixation' has started when gaze position
+			# remains reasonably stable for self.fixtimetresh
+		
+			# get starting position
+			spos = self.sample()
+			while not self.is_valid_sample(spos, 'gp'):
+				spos = self.sample()
+		
+			# get starting time
+			t0 = clock.get_time()
+
+			# wait for reasonably stable position
+			moving = True
+			while moving:
+				# get new sample
+				npos = self.sample()
+				# check if sample is valid
+				if self.is_valid_sample(npos, 'gp'):
+					# check if new sample is too far from starting position
+					if (npos[0]-spos[0])**2 + (npos[1]-spos[1])**2 > \
+												self.pxfixtresh**2:
+						# if not, reset starting position and time
+						spos = copy.copy(npos)
+						t0 = clock.get_time()
+					# if new sample is close to starting sample
+					else:
+						# get timestamp
+						t1 = clock.get_time()
+						# check if fixation time threshold has been surpassed
+						if t1 - t0 >= self.fixtimetresh:
+							# return time and starting position
+							return t0, spos
+		# Run experimental fixation detection
+		else:
+			if self.init_run:
+				# If first time running, get inital samples to fill the window.
+				self.init_run = False
+				spos = self.sample3D()
+				eye_position = self.eye_position()
+				while not self.is_valid_sample(spos, 'gp3') and \
+					not self.is_valid_sample(eye_position, 'pc'):
+
+					if len(self.gaze_samples) < self.num_fixation_samples:
+						self.gaze_samples.append(spos)
+
+					if len(self.eye_samples) < self.num_fixation_samples:
+						self.eye_samples.append(eye_position)
+					
+					spos = self.sample3D()
+					eye_position = self.eye_position()
+			else:
+				# remove oldest sample
+				self.gaze_samples = self.gaze_samples[1:]
+				self.eye_samples = self.eye_samples[1:]
+
+				# Fetch new sample
+				spos = self.sample3D()
+				eye_position = self.eye_position()
+				while not self.is_valid_sample(spos, 'gp3') and \
+					not self.is_valid_sample(eye_position, 'pc'):
+					self.gaze_samples.append(spos)
+					self.eye_samples.append(eye_position)
+			
+			# make sure that all samples are for the same event
+			if is_same_event(self.gaze_samples + self.eye_samples):
+				# TODO: Use mems data to correct the angle that the eye(s) have
+				# actually moved before calculating the angular velocity.
+				ang_vel = self.calculate_angular_velocity(self.gaze_samples, self.eye_samples)
+
+				
+
+
+	def wait_for_fixation_end(self, experimental=False):
 
 		"""Returns time and gaze position when a fixation has ended;
 		function assumes that a 'fixation' has ended when a deviation of
@@ -796,7 +1089,9 @@ class TobiiGlassesTracker(BaseEyeTracker):
 		based on self.fixtresh, a property defined in self.__init__)
 
 		arguments
-		None
+		experimental	-- Boolean specifying if experimental variant of
+						   fixation detection should be used in place of
+						   Pygaze version.
 
 		returns
 		time, gazepos	-- time is the starting time in milliseconds (from
@@ -807,34 +1102,118 @@ class TobiiGlassesTracker(BaseEyeTracker):
 
 		"""
 
-		"""Not supported for TobiiProGlassesTracker (yet)"""
+		# # # # #
+		# Tobii method
 
-		print("function not supported yet")
+		if self.eventdetection == 'native':
+			
+			# print warning, since Tobii does not have a fixation detection
+			# built into their API
+			
+			print("WARNING! 'native' event detection has been selected, \
+				but Tobii does not offer fixation detection; other algorithm \
+				will be used")
 
-	def wait_for_fixation_start(self):
+		# Run pygaze fixation detection (taken from tobiilegacy)
+		if not experimental:
+			# # # # #
+			# PyGaze method
+		
+			# function assumes that a 'fixation' has ended when a deviation of more than fixtresh
+			# from the initial 'fixation' position has been detected
+		
+			# get starting time and position
+			stime, spos = self.wait_for_fixation_start()
+		
+			# loop until fixation has ended
+			while True:
+				# get new sample
+				npos = self.sample() # get newest sample
+				# check if sample is valid
+				if self.is_valid_sample(npos, 'gp'):
+					# check if sample deviates to much from starting position
+					if (npos[0]-spos[0])**2 + (npos[1]-spos[1])**2 > self.pxfixtresh**2: # Pythagoras
+						# break loop if deviation is too high
+						break
 
-		"""Returns starting time and position when a fixation is started;
-		function assumes a 'fixation' has started when gaze position
-		remains reasonably stable (i.e. when most deviant samples are
-		within self.pxfixtresh) for five samples in a row (self.pxfixtresh
-		is created in self.calibration, based on self.fixtresh, a property
-		defined in self.__init__)
+			return clock.get_time(), spos
+
+		# Run experimental fixation detection
+		else:
+			stime, spos = self.wait_for_fixation_start(experimental=True)
+
+	def wait_for_saccade_start(self):
+
+		"""Returns starting time and starting position when a saccade is
+		started; based on Dalmaijer et al. (2013) online saccade detection
+		algorithm
 
 		arguments
 		None
 
 		returns
-		time, gazepos	-- time is the starting time in milliseconds (from
-					   expstart), gazepos is a (x,y) gaze position
-					   tuple of the position from which the fixation
-					   was initiated
+		endtime, startpos	-- endtime in milliseconds (from expbegintime);
+							   startpos is an (x,y) gaze position tuple
 
 		"""
 
-		"""Not supported for TobiiProGlassesTracker (yet)"""
+		# # # # #
+		# Tobii method
 
-		print("function not supported yet")
+		if self.eventdetection == 'native':
+			
+			# print warning, since Tobii does not have a blink detection
+			# built into their API
+			
+			print("WARNING! 'native' event detection has been selected, \
+				but Tobii does not offer saccade detection; PyGaze \
+				algorithm will be used")
 
+		# # # # #
+		# PyGaze method
+
+		# get starting position (no blinks)
+			newpos = self.sample()
+			while not self.is_valid_sample(newpos, 'gp'):
+				newpos = self.sample()
+			# get starting time, position, intersampledistance, and velocity
+			t0 = clock.get_time()
+			prevpos = newpos[:]
+			s = 0
+			v0 = 0
+
+			# get samples
+			saccadic = False
+			while not saccadic:
+				# get new sample
+				newpos = self.sample()
+				t1 = clock.get_time()
+				if self.is_valid_sample(newpos, 'gp') and newpos != prevpos:
+					# check if distance is larger than precision error
+					sx = newpos[0]-prevpos[0]; sy = newpos[1]-prevpos[1]
+					# weigthed distance: (sx/tx)**2 + (sy/ty)**2 > 1 means
+					# movement larger than RMS noise
+					if (sx/self.pxdsttresh[0])**2 + (sy/self.pxdsttresh[1])**2 \
+						> self.weightdist:
+						# calculate distance
+						# intersampledistance = speed in pixels/ms
+						s = ((sx)**2 + (sy)**2)**0.5
+						# calculate velocity
+						v1 = s / (t1-t0)
+						# calculate acceleration
+						a = (v1-v0) / (t1-t0) # acceleration in pixels/ms**2
+						# check if either velocity or acceleration are above
+						# threshold values
+						if v1 > self.pxspdtresh or a > self.pxacctresh:
+							saccadic = True
+							spos = prevpos[:]
+							stime = clock.get_time()
+						# update previous values
+						t0 = copy.copy(t1)
+						v0 = copy.copy(v1)
+					# udate previous sample
+					prevpos = newpos[:]
+			return stime, spos
 
 	def wait_for_saccade_end(self):
 
@@ -852,48 +1231,116 @@ class TobiiGlassesTracker(BaseEyeTracker):
 
 		"""
 
-		"""Not supported for TobiiProGlassesTracker (yet)"""
+		# # # # #
+		# Tobii method
 
-		print("function not supported yet")
+		if self.eventdetection == 'native':
+			
+			# print warning, since Tobii does not have a blink detection
+			# built into their API
+			
+			print("WARNING! 'native' event detection has been selected, \
+				but Tobii does not offer saccade detection; PyGaze \
+				algorithm will be used")
 
-	def wait_for_saccade_start(self):
+		# # # # #
+		# PyGaze method
+		
+		# get starting position (no blinks)
+		t0, spos = self.wait_for_saccade_start()
+		# get valid sample
+		prevpos = self.sample()
+		while not self.is_valid_sample(prevpos, 'gp'):
+			prevpos = self.sample()
+		# get starting time, intersample distance, and velocity
+		t1 = clock.get_time()
+		# = intersample distance = speed in px/sample
+		s = ((prevpos[0]-spos[0])**2 + (prevpos[1]-spos[1])**2)**0.5 
+		v0 = s / (t1-t0)
 
-		"""Returns starting time and starting position when a saccade is
-		started; based on Dalmaijer et al. (2013) online saccade detection
-		algorithm
+		# run until velocity and acceleration go below threshold
+		saccadic = True
+		while saccadic:
+			# get new sample
+			newpos = self.sample()
+			t1 = clock.get_time()
+			if self.is_valid_sample(newpos,'gp') and newpos != prevpos:
+				# calculate distance
+				# speed in pixels/sample
+				s = ((newpos[0]-prevpos[0])**2 + \
+					(newpos[1]-prevpos[1])**2)**0.5 
+				# calculate velocity
+				v1 = s / (t1-t0)
+				# calculate acceleration
+				# acceleration in pixels/sample**2 
+				a = (v1-v0) / (t1-t0) 
+				# check if velocity and acceleration are below threshold
+				if v1 < self.pxspdtresh and (a > -1*self.pxacctresh and a < 0):
+					saccadic = False
+					epos = newpos[:]
+					etime = clock.get_time()
+				# update previous values
+				t0 = copy.copy(t1)
+				v0 = copy.copy(v1)
+			# udate previous sample
+			prevpos = newpos[:]
 
-		arguments
-		None
+		return etime, spos, epos
 
-		returns
-		endtime, startpos	-- endtime in milliseconds (from expbegintime);
-					   startpos is an (x,y) gaze position tuple
-
-		"""
-
-		"""Not supported for TobiiProGlassesTracker (yet)"""
-
-		print("function not supported yet")
-
-
-	def is_valid_sample(self, gazepos):
+	def is_valid_sample(self, sample, sample_type):
 
 		"""Checks if the sample provided is valid, based on Tobii specific
 		criteria (for internal use)
 
 		arguments
-		gazepos		--	a (x,y) gaze position tuple, as returned by
-						self.sample()
+		sample		--	A sample of sample type to be checked
+
+		sample_type	-- String telling the type of the supplied sample
 
 		returns
-		valid			--	a Boolean: True on a valid sample, False on
-						an invalid sample
+		valid		--	a Boolean: True on a valid sample, False on
+					    an invalid sample
 
 		"""
+		if sample_type == 'gp3':
+			if sample['gp3'] == [-1,-1,-1]:
+				return False
+		elif sample_type == 'gp':
+			if sample == (-1,-1):
+				# TODO: change data container of sample to conform with rest of
+				# data.
+				return False
+		elif sample_type == 'pc':
+			if sample['pc'] == [-1,-1,-1]:
+				return False
+		else:
+			# supplied sample type not supported. log error.
+			log.error("The supplied sample type {} is not supported.".format(sample_type))
 
-		"""Not supported for TobiiProGlassesTracker (yet)"""
+		# in any other case, the sample is valid
+		return True
 
-		print("function not supported yet")
+
+	def is_same_event(self, gaze_samples, eye_samples):
+
+		"""Checks that samples from livedata is from the same gaze event.
+
+		Tobii glasses has a key value gidx, indicating which gaze event a
+		sample is part of. It is used to check that each sample from gaze 
+		position and eye position are from the same event. Gidx should be
+		the equal at the same position in the sample list.
+
+		arguments
+		samples		-- List of samples to check.
+
+		returns
+		valid		-- Boolean which is True if all samples share the same gidx
+					   and False if they do not.
+		
+		"""
+		
+		valid = all(gaze['gidx'] == eye['gidx'] for gaze, eye in zip(gaze_samples, eye_samples))
+		return valid
 
 	def get_data(self):
 
